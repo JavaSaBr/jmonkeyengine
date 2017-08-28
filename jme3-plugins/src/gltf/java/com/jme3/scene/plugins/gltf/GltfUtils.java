@@ -1,6 +1,7 @@
 package com.jme3.scene.plugins.gltf;
 
 import com.google.gson.*;
+import com.jme3.asset.AssetInfo;
 import com.jme3.asset.AssetLoadException;
 import com.jme3.math.ColorRGBA;
 import com.jme3.math.Matrix4f;
@@ -236,42 +237,43 @@ public class GltfUtils {
         }
     }
 
-    public static void populateBuffer(Object store, byte[] source, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    public static void populateBuffer(Object store, byte[] source, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
 
         if (store instanceof Buffer) {
             Buffer buffer = (Buffer) store;
             buffer.clear();
             if (buffer instanceof ByteBuffer) {
-                populateByteBuffer((ByteBuffer) buffer, source, length, byteOffset, byteStride, numComponents, componentSize);
+                populateByteBuffer((ByteBuffer) buffer, source, length, byteOffset, byteStride, numComponents, format);
                 return;
             }
             LittleEndien stream = getStream(source);
             if (buffer instanceof ShortBuffer) {
-                populateShortBuffer((ShortBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, componentSize);
+                populateShortBuffer((ShortBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, format);
             } else if (buffer instanceof IntBuffer) {
-                populateIntBuffer((IntBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, componentSize);
+                populateIntBuffer((IntBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, format);
             } else if (buffer instanceof FloatBuffer) {
-                populateFloatBuffer((FloatBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, componentSize);
+                populateFloatBuffer((FloatBuffer) buffer, stream, length, byteOffset, byteStride, numComponents, format);
             }
             buffer.rewind();
             return;
         }
         LittleEndien stream = getStream(source);
         if (store instanceof short[]) {
-            populateShortArray((short[]) store, stream, length, byteOffset, byteStride, numComponents, componentSize);
+            populateShortArray((short[]) store, stream, length, byteOffset, byteStride, numComponents, format);
         } else
         if (store instanceof float[]) {
-            populateFloatArray((float[]) store, stream, length, byteOffset, byteStride, numComponents, componentSize);
+            populateFloatArray((float[]) store, stream, length, byteOffset, byteStride, numComponents, format);
         } else if (store instanceof Vector3f[]) {
-            populateVector3fArray((Vector3f[]) store, stream, length, byteOffset, byteStride, numComponents, componentSize);
+            populateVector3fArray((Vector3f[]) store, stream, length, byteOffset, byteStride, numComponents, format);
         } else if (store instanceof Quaternion[]) {
-            populateQuaternionArray((Quaternion[]) store, stream, length, byteOffset, byteStride, numComponents, componentSize);
+            populateQuaternionArray((Quaternion[]) store, stream, length, byteOffset, byteStride, numComponents, format);
         } else if (store instanceof Matrix4f[]) {
-            populateMatrix4fArray((Matrix4f[]) store, stream, length, byteOffset, byteStride, numComponents, componentSize);
+            populateMatrix4fArray((Matrix4f[]) store, stream, length, byteOffset, byteStride, numComponents, format);
         }
     }
 
-    private static void populateByteBuffer(ByteBuffer buffer, byte[] source, int length, int byteOffset, int byteStride, int numComponents, int componentSize) {
+    private static void populateByteBuffer(ByteBuffer buffer, byte[] source, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         while (index < length + byteOffset) {
             for (int i = 0; i < numComponents; i++) {
@@ -281,7 +283,8 @@ public class GltfUtils {
         }
     }
 
-    private static void populateShortBuffer(ShortBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateShortBuffer(ShortBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
@@ -293,7 +296,8 @@ public class GltfUtils {
         }
     }
 
-    private static void populateIntBuffer(IntBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateIntBuffer(IntBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
@@ -305,19 +309,50 @@ public class GltfUtils {
         }
     }
 
-    private static void populateFloatBuffer(FloatBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateFloatBuffer(FloatBuffer buffer, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
         while (index < end) {
             for (int i = 0; i < numComponents; i++) {
-                buffer.put(stream.readFloat());
+                buffer.put(readAsFloat(stream, format));
             }
             index += Math.max(componentSize * numComponents, byteStride);
         }
     }
 
-    private static void populateShortArray(short[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static float readAsFloat(LittleEndien stream, VertexBuffer.Format format) throws IOException {
+        //We may have packed data so depending on the format, we need to read data differently and unpack it
+        // Implementations must use following equations to get corresponding floating-point value f from a normalized integer c and vise-versa:
+        // accessor.componentType	int-to-float	            float-to-int
+        // 5120 (BYTE)	            f = max(c / 127.0, -1.0)	c = round(f * 127.0)
+        // 5121 (UNSIGNED_BYTE)	    f = c / 255.0	            c = round(f * 255.0)
+        // 5122 (SHORT)	            f = max(c / 32767.0, -1.0)	c = round(f * 32767.0)
+        // 5123 (UNSIGNED_SHORT)	f = c / 65535.0	            c = round(f * 65535.0)
+        byte b;
+        switch (format) {
+            case Byte:
+                b = stream.readByte();
+                return Math.max((float) b / 127f, -1f);
+            case UnsignedByte:
+                b = stream.readByte();
+                return (float) b / 255f;
+            case Short:
+                b = stream.readByte();
+                return Math.max((float) b / 32767f, -1f);
+            case UnsignedShort:
+                b = stream.readByte();
+                return (float) b / 65535f;
+            default:
+                //we have a regular float
+                return stream.readFloat();
+        }
+
+    }
+
+    private static void populateShortArray(short[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
@@ -403,14 +438,15 @@ public class GltfUtils {
         mesh.setBuffer(VertexBuffer.Type.BoneWeight, 4, BufferUtils.createFloatBuffer(weightsArray));
     }
 
-    private static void populateFloatArray(float[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateFloatArray(float[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
         int arrayIndex = 0;
         while (index < end) {
             for (int i = 0; i < numComponents; i++) {
-                array[arrayIndex] = stream.readFloat();
+                array[arrayIndex] = readAsFloat(stream, format);
                 arrayIndex++;
             }
 
@@ -418,16 +454,17 @@ public class GltfUtils {
         }
     }
 
-    private static void populateVector3fArray(Vector3f[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateVector3fArray(Vector3f[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
         int arrayIndex = 0;
         while (index < end) {
             array[arrayIndex] = new Vector3f(
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat()
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format)
             );
 
             arrayIndex++;
@@ -436,17 +473,18 @@ public class GltfUtils {
         }
     }
 
-    private static void populateQuaternionArray(Quaternion[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateQuaternionArray(Quaternion[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
         int arrayIndex = 0;
         while (index < end) {
             array[arrayIndex] = new Quaternion(
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat()
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format)
             );
 
             arrayIndex++;
@@ -455,35 +493,68 @@ public class GltfUtils {
         }
     }
 
-    private static void populateMatrix4fArray(Matrix4f[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, int componentSize) throws IOException {
+    private static void populateMatrix4fArray(Matrix4f[] array, LittleEndien stream, int length, int byteOffset, int byteStride, int numComponents, VertexBuffer.Format format) throws IOException {
+        int componentSize = format.getComponentSize();
         int index = byteOffset;
         int end = length * componentSize + byteOffset;
         stream.skipBytes(byteOffset);
         int arrayIndex = 0;
         while (index < end) {
-            array[arrayIndex] = new Matrix4f(
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat(),
-                    stream.readFloat()
+
+            array[arrayIndex] = toRowMajor(
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format),
+                    readAsFloat(stream, format)
             );
+            //gltf matrix are column major, JME ones are row major.
 
             arrayIndex++;
 
             index += Math.max(componentSize * numComponents, byteStride);
         }
+    }
+
+    public static Matrix4f toRowMajor(float m00, float m01, float m02, float m03,
+                                      float m10, float m11, float m12, float m13,
+                                      float m20, float m21, float m22, float m23,
+                                      float m30, float m31, float m32, float m33) {
+        return new Matrix4f(m00, m10, m20, m30, m01, m11, m21, m31, m02, m12, m22, m32, m03, m13, m23, m33);
+    }
+
+    public static GltfModelKey getKey(AssetInfo info) {
+        if (info.getKey() instanceof GltfModelKey) {
+            return (GltfModelKey) info.getKey();
+        }
+        return null;
+    }
+
+    public static MaterialAdapter getAdapterForMaterial(AssetInfo info, String defName) {
+        GltfModelKey key = getKey(info);
+        if (key == null) {
+            return null;
+        }
+        return key.getAdapterForMaterial(defName);
+    }
+
+    public static boolean isKeepSkeletonPose(AssetInfo info) {
+        GltfModelKey key = getKey(info);
+        if (key == null) {
+            return false;
+        }
+        return key.isKeepSkeletonPose();
     }
 
     private static LittleEndien getStream(byte[] buffer) {
