@@ -94,8 +94,7 @@ public class GltfLoader implements AssetLoader {
             String version = getAsString(asset, "version");
             String minVersion = getAsString(asset, "minVersion");
             if (!isSupported(version, minVersion)) {
-                //TODO maybe just warn. gltf specs claims it will be backward compatible so at worst the user will miss some data.
-                throw new AssetLoadException("Gltf Loader doesn't support this gltf version: " + version + (minVersion != null ? ("/" + minVersion) : ""));
+                logger.log(Level.SEVERE, "Gltf Loader doesn't support this gltf version: " + version + (minVersion != null ? ("/" + minVersion) : ""));
             }
 
             scenes = docRoot.getAsJsonArray("scenes");
@@ -121,7 +120,7 @@ public class GltfLoader implements AssetLoader {
 
             readScenes(defaultScene, rootNode);
 
-            rootNode = customContentManager.readExtension(docRoot, rootNode);
+            rootNode = customContentManager.readExtensionAndExtras("root", docRoot, rootNode);
 
             setupControls();
 
@@ -163,7 +162,7 @@ public class GltfLoader implements AssetLoader {
 
             sceneNode.setName(getAsString(scene.getAsJsonObject(), "name"));
             JsonArray sceneNodes = scene.getAsJsonObject().getAsJsonArray("nodes");
-            sceneNode = customContentManager.readExtension(scene, sceneNode);
+            sceneNode = customContentManager.readExtensionAndExtras("scene", scene, sceneNode);
             rootNode.attachChild(sceneNode);
             for (JsonElement node : sceneNodes) {
                 readChild(sceneNode, node);
@@ -248,7 +247,7 @@ public class GltfLoader implements AssetLoader {
             spatial.setName(getAsString(nodeData.getAsJsonObject(), "name"));
         }
 
-        spatial = customContentManager.readExtension(nodeData, spatial);
+        spatial = customContentManager.readExtensionAndExtras("node", nodeData, spatial);
 
         addToCache("nodes", nodeIndex, spatial, nodes.size());
         return spatial;
@@ -384,7 +383,7 @@ public class GltfLoader implements AssetLoader {
                 mesh.generateBindPose();
             }
 
-            mesh = customContentManager.readExtension(meshObject, mesh);
+            mesh = customContentManager.readExtensionAndExtras("primitive", meshObject, mesh);
 
             Geometry geom = new Geometry(null, mesh);
 
@@ -415,7 +414,7 @@ public class GltfLoader implements AssetLoader {
             //TODO targets(morph anim...)
         }
 
-        geomArray = customContentManager.readExtension(meshData, geomArray);
+        geomArray = customContentManager.readExtensionAndExtras("mesh", meshData, geomArray);
 
         addToCache("meshes", meshIndex, geomArray, meshes.size());
         return geomArray;
@@ -448,13 +447,11 @@ public class GltfLoader implements AssetLoader {
 
         boolean normalized = getAsBoolean(accessor, "normalized", false);
 
-        //TODO support packed data
-        //TODO min / max
+        //TODO min / max...don't know what to do about them.
         //TODO sparse
-        //TODO extras?
 
         R data = populator.populate(bufferViewIndex, componentType, type, count, byteOffset, normalized);
-        data = customContentManager.readExtension(accessor, data);
+        data = customContentManager.readExtensionAndExtras("accessor", accessor, data);
         return data;
     }
 
@@ -474,12 +471,9 @@ public class GltfLoader implements AssetLoader {
 
         byte[] data = readData(bufferIndex);
 
-        data = customContentManager.readExtension(bufferView, data);
+        data = customContentManager.readExtensionAndExtras("bufferView", bufferView, data);
 
         populateBuffer(store, data, bufferSize, byteOffset + bvByteOffset, byteStride, numComponents, format);
-
-
-        //TODO extras?
 
     }
 
@@ -515,7 +509,7 @@ public class GltfLoader implements AssetLoader {
             throw new AssetLoadException("Binary gltf is not supported yet");
         }
 
-        data = customContentManager.readExtension(buffer, data);
+        data = customContentManager.readExtensionAndExtras("buffer", buffer, data);
 
         addToCache("buffers", bufferIndex, data, buffers.size());
         return data;
@@ -539,7 +533,7 @@ public class GltfLoader implements AssetLoader {
             adapter.init(info.getManager());
         }
 
-        adapter = customContentManager.readExtension(matData, adapter);
+        adapter = customContentManager.readExtensionAndExtras("material", matData, adapter);
 
         if (adapter == null) {
             logger.log(Level.WARNING, "Couldn't find any matching material definition for material " + materialIndex);
@@ -599,7 +593,7 @@ public class GltfLoader implements AssetLoader {
                 Float zfar = getAsFloat(camData, "zfar", znear * 1000f);
 
                 cam.setFrustumPerspective(yfov * FastMath.RAD_TO_DEG, aspectRatio, znear, zfar);
-                cam = customContentManager.readExtension(camData, cam);
+                cam = customContentManager.readExtensionAndExtras("camera.perspective", camData, cam);
 
             } else {
                 Float xmag = getAsFloat(camData, "xmag");
@@ -609,14 +603,14 @@ public class GltfLoader implements AssetLoader {
                 Float znear = getAsFloat(camData, "znear");
                 assertNotNull(znear, "No znear for orthographic camere");
                 Float zfar = getAsFloat(camData, "zfar", znear * 1000f);
-                assertNotNull(zfar, "No zfar for orthographic camere");
+                assertNotNull(zfar, "No zfar for orthographic camera");
 
                 cam.setParallelProjection(true);
                 cam.setFrustum(znear, zfar, -xmag, xmag, ymag, -ymag);
 
-                cam = customContentManager.readExtension(camData, cam);
+                cam = customContentManager.readExtensionAndExtras("camera.orthographic", camData, cam);
             }
-
+            cam = customContentManager.readExtensionAndExtras("camera", camObj, cam);
             addToCache("cameras", i, cam, cameras.size());
         }
     }
@@ -639,9 +633,14 @@ public class GltfLoader implements AssetLoader {
         Integer samplerIndex = getAsInteger(textureData, "sampler");
 
         Texture2D texture2d = readImage(sourceIndex, flip);
-        readSampler(samplerIndex, texture2d);
 
-        texture2d = customContentManager.readExtension(texture, texture2d);
+        if (samplerIndex != null) {
+            texture2d = readSampler(samplerIndex, texture2d);
+        } else {
+            texture2d.setWrap(Texture.WrapMode.Repeat);
+        }
+
+        texture2d = customContentManager.readExtensionAndExtras("texture", texture, texture2d);
 
         return texture2d;
     }
@@ -673,7 +672,7 @@ public class GltfLoader implements AssetLoader {
             result = (Texture2D) tex;
         }
 
-        result = customContentManager.readExtension(image, result);
+        result = customContentManager.readExtensionAndExtras("image", image, result);
 
         return result;
 
@@ -728,6 +727,8 @@ public class GltfLoader implements AssetLoader {
                 logger.log(Level.WARNING, "JME only supports linear interpolation for animations");
             }
 
+            animData = customContentManager.readExtensionAndExtras("animation.sampler", sampler, animData);
+
             float[] times = fetchFromCache("accessors", timeIndex, float[].class);
             if (times == null) {
                 times = readAccessorData(timeIndex, floatArrayPopulator);
@@ -757,6 +758,7 @@ public class GltfLoader implements AssetLoader {
                 Quaternion[] rotations = readAccessorData(dataIndex, quaternionArrayPopulator);
                 animData.rotations = rotations;
             }
+            animatedNodes[targetNode] = customContentManager.readExtensionAndExtras("channel", channel, animData);
         }
 
         if (name == null) {
@@ -802,7 +804,7 @@ public class GltfLoader implements AssetLoader {
             }
         }
 
-        anim = customContentManager.readExtension(animation, anim);
+        anim = customContentManager.readExtensionAndExtras("animations", animation, anim);
 
         if (skinIndex != -1) {
             //we have a bone animation.
@@ -841,7 +843,7 @@ public class GltfLoader implements AssetLoader {
         }
     }
 
-    public void readSampler(int samplerIndex, Texture2D texture) {
+    public Texture2D readSampler(int samplerIndex, Texture2D texture) {
         if (samplers == null) {
             throw new AssetLoadException("No samplers defined");
         }
@@ -859,6 +861,10 @@ public class GltfLoader implements AssetLoader {
         }
         texture.setWrap(Texture.WrapAxis.S, wrapS);
         texture.setWrap(Texture.WrapAxis.T, wrapT);
+
+        texture = customContentManager.readExtensionAndExtras("texture.sampler", sampler, texture);
+
+        return texture;
     }
 
     public void readSkins() throws IOException {
@@ -916,6 +922,8 @@ public class GltfLoader implements AssetLoader {
                 }
                 skeleton.updateWorldVectors();
             }
+
+            skeleton = customContentManager.readExtensionAndExtras("skin", skin, skeleton);
 
             SkinData skinData = new SkinData();
             skinData.skeletonControl = new SkeletonControl(skeleton);
@@ -1006,9 +1014,7 @@ public class GltfLoader implements AssetLoader {
                     //The child might be a Geom
                     if (getAsInteger(childNode, "mesh") != null) {
                         //this is a geometry, let's load it as a spatial
-                        Spatial s = (Spatial) readNode(childIndex);
-                        bw.attachedSpatial = s;
-                        //   addToCache("nodes", nodeIndex, s, nodes.size());
+                        bw.attachedSpatial = (Spatial) readNode(childIndex);
                     }
                 }
             }
