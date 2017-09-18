@@ -1013,6 +1013,18 @@ public class Mesh implements Savable, Cloneable, JmeCloneable {
                            BoundingVolume worldBound,
                            CollisionResults results){
 
+        switch (mode) {
+            case Points:
+            case Lines:
+            case LineStrip:
+            case LineLoop:
+                /*
+                 * Collisions can be detected only with triangles,
+                 * and there are no triangles in this mesh.
+                 */
+                return 0;
+        }
+
         if (getVertexCount() == 0) {
             return 0;
         }
@@ -1447,7 +1459,7 @@ public class Mesh implements Savable, Cloneable, JmeCloneable {
             return false; // no bone animation data
         }
 
-        BufferUtils.ByteShortIntBufferReader boneIndexBuffer = new BufferUtils.ByteShortIntBufferReader(biBuf.getData());
+        IndexBuffer boneIndexBuffer = IndexBuffer.wrapIndexBuffer(biBuf.getData());
         boneIndexBuffer.rewind();
         int numBoneIndices = boneIndexBuffer.remaining();
         assert numBoneIndices % 4 == 0 : numBoneIndices;
