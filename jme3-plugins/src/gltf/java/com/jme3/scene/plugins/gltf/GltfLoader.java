@@ -140,6 +140,8 @@ public class GltfLoader implements AssetLoader {
             return rootNode;
         } catch (Exception e) {
             throw new AssetLoadException("An error occurred loading " + assetInfo.getKey().getName(), e);
+        } finally {
+            stream.close();
         }
     }
 
@@ -527,7 +529,9 @@ public class GltfLoader implements AssetLoader {
                 BinDataKey key = new BinDataKey(info.getKey().getFolder() + uri);
                 InputStream input = (InputStream) info.getManager().loadAsset(key);
                 data = new byte[bufferLength];
-                input.read(data);
+                DataInputStream dataStream = new DataInputStream(input);
+                dataStream.readFully(data);
+                dataStream.close();
             }
         } else {
             //no URI this should not happen in a gltf file, only in glb files.
@@ -709,7 +713,7 @@ public class GltfLoader implements AssetLoader {
         assertNotNull(samplers, "No samplers for animation " + name);
 
         //temp data storage of track data
-        AnimData[] animatedNodes = new AnimData[nodes.size()];
+        TrackData[] animatedNodes = new TrackData[nodes.size()];
 
         for (JsonElement channel : channels) {
 
@@ -728,10 +732,10 @@ public class GltfLoader implements AssetLoader {
                 logger.log(Level.WARNING, "Morph animation is not supported by JME yet, skipping animation");
                 continue;
             }
-            AnimData animData = animatedNodes[targetNode];
-            if (animData == null) {
-                animData = new AnimData();
-                animatedNodes[targetNode] = animData;
+            TrackData trackData = animatedNodes[targetNode];
+            if (trackData == null) {
+                trackData = new TrackData();
+                animatedNodes[targetNode] = trackData;
             }
 
             Integer samplerIndex = getAsInteger(channel.getAsJsonObject(), "sampler");
@@ -749,38 +753,34 @@ public class GltfLoader implements AssetLoader {
                 logger.log(Level.WARNING, "JME only supports linear interpolation for animations");
             }
 
-            animData = customContentManager.readExtensionAndExtras("animation.sampler", sampler, animData);
+            trackData = customContentManager.readExtensionAndExtras("animation.sampler", sampler, trackData);
 
             float[] times = fetchFromCache("accessors", timeIndex, float[].class);
             if (times == null) {
                 times = readAccessorData(timeIndex, floatArrayPopulator);
                 addToCache("accessors", timeIndex, times, accessors.size());
             }
-            if (animData.times == null) {
-                animData.times = times;
-            } else {
-                //check if we are loading the same time array
-                if (animData.times != times) {
-                    //TODO there might be work to do here... if the inputs are different we might want to merge the different times array...
-                    //easier said than done.
-                    logger.log(Level.WARNING, "Channel has different input accessors for samplers");
-                }
-            }
-            if (animData.length == null) {
-                //animation length is the last timestamp
-                animData.length = times[times.length - 1];
-            }
+
             if (targetPath.equals("translation")) {
+                trackData.timeArrays.add(new TrackData.TimeData(times, TrackData.Type.Translation));
                 Vector3f[] translations = readAccessorData(dataIndex, vector3fArrayPopulator);
-                animData.translations = translations;
+                trackData.translations = translations;
             } else if (targetPath.equals("scale")) {
+                trackData.timeArrays.add(new TrackData.TimeData(times, TrackData.Type.Scale));
                 Vector3f[] scales = readAccessorData(dataIndex, vector3fArrayPopulator);
-                animData.scales = scales;
+                trackData.scales = scales;
             } else if (targetPath.equals("rotation")) {
+                trackData.timeArrays.add(new TrackData.TimeData(times, TrackData.Type.Rotation));
                 Quaternion[] rotations = readAccessorData(dataIndex, quaternionArrayPopulator);
-                animData.rotations = rotations;
+                trackData.rotations = rotations;
+            } else {
+                //TODO support weights
+                logger.log(Level.WARNING, "Morph animation is not supported");
+                animatedNodes[targetNode] = null;
+                continue;
+
             }
-            animatedNodes[targetNode] = customContentManager.readExtensionAndExtras("channel", channel, animData);
+            animatedNodes[targetNode] = customContentManager.readExtensionAndExtras("channel", channel, trackData);
         }
 
         if (name == null) {
@@ -793,26 +793,26 @@ public class GltfLoader implements AssetLoader {
         int skinIndex = -1;
 
         for (int i = 0; i < animatedNodes.length; i++) {
-            AnimData animData = animatedNodes[i];
-            if (animData == null) {
+            TrackData trackData = animatedNodes[i];
+            if (trackData == null) {
                 continue;
             }
-            if (animData.length > anim.getLength()) {
-                anim.setLength(animData.length);
+            trackData.update();
+            if (trackData.length > anim.getLength()) {
+                anim.setLength(trackData.length);
             }
-            animData.update();
             Object node = fetchFromCache("nodes", i, Object.class);
             if (node instanceof Spatial) {
                 Spatial s = (Spatial) node;
                 spatials.add(s);
-                SpatialTrack track = new SpatialTrack(animData.times, animData.translations, animData.rotations, animData.scales);
+                SpatialTrack track = new SpatialTrack(trackData.times, trackData.translations, trackData.rotations, trackData.scales);
                 track.setTrackSpatial(s);
                 anim.addTrack(track);
             } else if (node instanceof BoneWrapper) {
                 BoneWrapper b = (BoneWrapper) node;
                 //apply the inverseBindMatrix to animation data.
-                b.update(animData);
-                BoneTrack track = new BoneTrack(b.boneIndex, animData.times, animData.translations, animData.rotations, animData.scales);
+                b.update(trackData);
+                BoneTrack track = new BoneTrack(b.boneIndex, trackData.times, trackData.translations, trackData.rotations, trackData.scales);
                 anim.addTrack(track);
                 if (skinIndex == -1) {
                     skinIndex = b.skinIndex;
@@ -960,6 +960,7 @@ public class GltfLoader implements AssetLoader {
         bw.bone.setLocalTranslation(bw.localTransform.getTranslation());
         bw.bone.setLocalRotation(bw.localTransform.getRotation());
         bw.bone.setLocalScale(bw.localTransform.getScale());
+        bw.bone.setUserControl(false);
     }
 
     private void computeBindTransforms(BoneWrapper boneWrapper, Skeleton skeleton) {
@@ -1136,46 +1137,6 @@ public class GltfLoader implements AssetLoader {
         }
     }
 
-    private class AnimData {
-        Float length;
-        float[] times;
-        Vector3f[] translations;
-        Quaternion[] rotations;
-        Vector3f[] scales;
-        //not used for now
-        float[] weights;
-
-        public void update() {
-            if (times[0] > 0) {
-                //Anim doesn't start at 0, JME can't handle that and will interpolate transforms linearly from 0 to the first frame of the anim.
-                //we need to add a frame at 0 that copies the first real frame
-
-                float[] newTimes = new float[times.length + 1];
-                newTimes[0] = 0f;
-                System.arraycopy(times, 0, newTimes, 1, times.length);
-                times = newTimes;
-
-                if (translations != null) {
-                    Vector3f[] newTranslations = new Vector3f[translations.length + 1];
-                    newTranslations[0] = translations[0];
-                    System.arraycopy(translations, 0, newTranslations, 1, translations.length);
-                    translations = newTranslations;
-                }
-                if (rotations != null) {
-                    Quaternion[] newRotations = new Quaternion[rotations.length + 1];
-                    newRotations[0] = rotations[0];
-                    System.arraycopy(rotations, 0, newRotations, 1, rotations.length);
-                    rotations = newRotations;
-                }
-                if (scales != null) {
-                    Vector3f[] newScales = new Vector3f[scales.length + 1];
-                    newScales[0] = scales[0];
-                    System.arraycopy(scales, 0, newScales, 1, scales.length);
-                    scales = newScales;
-                }
-            }
-        }
-    }
 
     private class BoneWrapper {
         Bone bone;
@@ -1198,12 +1159,17 @@ public class GltfLoader implements AssetLoader {
         /**
          * Applies the inverse Bind transforms to anim data. and the armature transforms if relevant.
          */
-        public void update(AnimData data) {
+        public void update(TrackData data) {
             Transform bindTransforms = new Transform(bone.getBindPosition(), bone.getBindRotation(), bone.getBindScale());
             SkinData skinData = fetchFromCache("skins", skinIndex, SkinData.class);
 
-            for (int i = 0; i < data.translations.length; i++) {
-                Transform t = new Transform(data.translations[i], data.rotations[i], data.scales[i]);
+            for (int i = 0; i < data.getNbKeyFrames(); i++) {
+
+                Vector3f translation = getTranslation(data, bindTransforms, i);
+                Quaternion rotation = getRotation(data, bindTransforms, i);
+                Vector3f scale = getScale(data, bindTransforms, i);
+
+                Transform t = new Transform(translation, rotation, scale);
                 if (isRoot) {
                     //Apply the armature transforms to the root bone anim track.
                     t.combineWithParent(skinData.armatureTransforms);
@@ -1219,10 +1185,48 @@ public class GltfLoader implements AssetLoader {
                 tmpQuat.set(bindTransforms.getRotation()).inverseLocal().multLocal(t.getRotation());
                 t.setRotation(tmpQuat);
 
-                data.translations[i] = t.getTranslation();
-                data.rotations[i] = t.getRotation();
-                data.scales[i] = t.getScale();
+                if(data.translations != null) {
+                    data.translations[i] = t.getTranslation();
+                }
+                if(data.rotations != null) {
+                    data.rotations[i] = t.getRotation();
+                }
+                if(data.scales != null) {
+                    data.scales[i] = t.getScale();
+                }
             }
+
+            data.ensureTranslationRotations();
+        }
+
+        private Vector3f getTranslation(TrackData data, Transform bindTransforms, int i) {
+            Vector3f translation;
+            if(data.translations == null){
+                translation = bindTransforms.getTranslation();
+            } else {
+                translation = data.translations[i];
+            }
+            return translation;
+        }
+
+        private Quaternion getRotation(TrackData data, Transform bindTransforms, int i) {
+            Quaternion rotation;
+            if(data.rotations == null){
+                rotation = bindTransforms.getRotation();
+            } else {
+                rotation = data.rotations[i];
+            }
+            return rotation;
+        }
+
+        private Vector3f getScale(TrackData data, Transform bindTransforms, int i) {
+            Vector3f scale;
+            if(data.scales == null){
+                scale = bindTransforms.getScale();
+            } else {
+                scale = data.scales[i];
+            }
+            return scale;
         }
     }
 
