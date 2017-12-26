@@ -187,7 +187,7 @@ public class GlfwMouseInput implements MouseInput {
 
         final long window = context.getWindowHandle();
 
-        try(MemoryStack stack = MemoryStack.stackPush()) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
 
             final IntBuffer width = stack.callocInt(1);
             final IntBuffer height = stack.callocInt(1);
