@@ -70,7 +70,7 @@ public class OGGLoader implements AssetLoader {
         protected int current = 0;
         protected final int maximum;
 
-        
+
         public JOggInputStream(PhysicalOggStream ps, LogicalOggStream ls, VorbisStream vs, int maximum){   
             this.ps = ps;
             this.ls = ls;
