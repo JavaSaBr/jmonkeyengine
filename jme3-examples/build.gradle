@@ -34,7 +34,7 @@ dependencies {
     compile project(':jme3-lwjgl')
 //    compile project(':jme3-lwjgl3')
     compile project(':jme3-networking')
-    compile project(':jme3-niftygui')
+ //   compile project(':jme3-niftygui')
     compile project(':jme3-plugins')
     compile project(':jme3-terrain')
     compile project(':jme3-testdata')
